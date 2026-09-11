@@ -25,8 +25,12 @@ A modern, customizable Discord Rich Presence client for **SoundCloud**, built wi
 ### 🚀 Quick Start
 1. Download the latest `zen_rpc.exe` from the [Releases](https://github.com/farma312/soundcloud-discord-rpc-/releases) tab.
 2. Install the **Tampermonkey** extension in your browser.
-3. Import the userscript from [`soundcloud_rpc.user.js`](./soundcloud_rpc.user.js).
-4. Run `zen_rpc.exe` and start playing any track on SoundCloud!
+3. **Enable Developer Mode** (Crucial for Chromium browsers):
+   - Open your browser's Extensions page (`chrome://extensions` or `opera://extensions`).
+   - Turn on the **Developer mode** toggle in the top-right corner (required for Tampermonkey to run userscripts).
+4. Import the userscript from [`soundcloud_rpc.user.js`](./soundcloud_rpc.user.js).
+5. Open SoundCloud and detach the tab into a **separate browser window** (so other active tabs don't override the window title).
+6. Launch `zen_rpc.exe` and enjoy!
 
 ---
 
@@ -51,5 +55,9 @@ A modern, customizable Discord Rich Presence client for **SoundCloud**, built wi
 ### 🚀 Установка и запуск
 1. Скачай последнюю версию `zen_rpc.exe` из раздела [Releases](https://github.com/farma312/soundcloud-discord-rpc-/releases).
 2. Установи расширение **Tampermonkey** в свой браузер.
-3. Добавь скрипт из файла [`soundcloud_rpc.user.js`](./soundcloud_rpc.user.js).
-4. Запусти `zen_rpc.exe` и включи любой трек на SoundCloud!
+3. **Включи «Режим разработчика»** (Обязательно для Chrome, Opera GX и Chromium):
+   - Перейди на страницу расширений (`chrome://extensions` или `opera://extensions`).
+   - В правом верхнем углу включи тумблер **«Режим разработчика»** (иначе браузер блокирует запуск пользовательских скриптов).
+4. Добавь скрипт из файла [`soundcloud_rpc.user.js`](./soundcloud_rpc.user.js).
+5. Открой SoundCloud и вынеси вкладку в **отдельное окно браузера** (чтобы другие вкладки не перебивали заголовок окна).
+6. Запусти `zen_rpc.exe` и слушай музыку!
