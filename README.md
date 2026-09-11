@@ -23,7 +23,7 @@ A modern, customizable Discord Rich Presence client for **SoundCloud**, built wi
 - **Multi-Browser Support:** Google Chrome, Opera GX, Zen Browser, Microsoft Edge, Mozilla Firefox, Yandex Browser.
 
 ### 🚀 Quick Start
-1. Download the latest `zen_rpc.exe` from the [Releases](https://github.com/farma312/soundcloud-discord-rpc-/releases) tab.
+1. Download the latest `zen_rpc.exe` from the [Releases](https://github.com/farma312/soundcloud-discord-rpc-/blob/main/soundcloud.user.js) tab.
 2. Install the **Tampermonkey** extension in your browser.
 3. **Enable Developer Mode** (Crucial for Chromium browsers):
    - Open your browser's Extensions page (`chrome://extensions` or `opera://extensions`).
@@ -53,7 +53,7 @@ A modern, customizable Discord Rich Presence client for **SoundCloud**, built wi
 - **Поддержка браузеров:** Google Chrome, Opera GX, Zen Browser, Microsoft Edge, Mozilla Firefox, Яндекс Браузер.
 
 ### 🚀 Установка и запуск
-1. Скачай последнюю версию `zen_rpc.exe` из раздела [Releases](https://github.com/farma312/soundcloud-discord-rpc-/releases).
+1. Скачай последнюю версию `zen_rpc.exe` из раздела [Releases](https://github.com/farma312/soundcloud-discord-rpc-/blob/main/soundcloud.user.js).
 2. Установи расширение **Tampermonkey** в свой браузер.
 3. **Включи «Режим разработчика»** (Обязательно для Chrome, Opera GX и Chromium):
    - Перейди на страницу расширений (`chrome://extensions` или `opera://extensions`).
