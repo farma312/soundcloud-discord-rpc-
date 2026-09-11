@@ -1,0 +1,41 @@
+{
+  "selected_browser": "Auto",
+  "theme": "Kawaii",
+  "language": "Ru",
+  "custom_accent": [
+    230,
+    95,
+    140
+  ],
+  "custom_bg": [
+    22,
+    18,
+    26
+  ],
+  "enable_particles": true,
+  "particles_direction_up": false,
+  "enable_vinyl": false,
+  "enable_equalizer": true,
+  "total_tracks_played": 3,
+  "custom_image_path": "C:\\Users\\farma\\zen_rpc\\src\\sf.png",
+  "history": [
+    {
+      "track": "greyrock, БытьРомантикомАфигено - уб((ли",
+      "artist": "greyrock, БытьРомантикомАфигено",
+      "played_at": "16:14",
+      "duration_sec": 87
+    },
+    {
+      "track": "greyrock - маргарита",
+      "artist": "greyrock",
+      "played_at": "16:16",
+      "duration_sec": 111
+    },
+    {
+      "track": "drunk & money",
+      "artist": "akiko!",
+      "played_at": "16:20",
+      "duration_sec": 106
+    }
+  ]
+}
