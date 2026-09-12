@@ -1,80 +1,70 @@
 // ==UserScript==
-// @name         SoundCloud Rich Presence Sync
+// @name         SoundCloud RPC Direct Connector
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      2.0
+// @description  Отправляет данные воспроизведения в локальное приложение zen_rpc
 // @author       farma312
 // @match        https://soundcloud.com/*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      127.0.0.1
 // @run-at       document-idle
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    function extractTime(element) {
-        if (!element) return null;
-        const text = element.innerText || element.textContent || '';
-        const match = text.match(/\d+:\d+(:\d+)?/);
-        return match ? match[0] : null;
+    function parseTimeToSeconds(tStr) {
+        if (!tStr) return 0;
+        const parts = tStr.trim().split(':').map(Number);
+        if (parts.length === 2) return parts[0] * 60 + parts[1];
+        if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+        return 0;
     }
 
-    function getCoverUrl() {
-        const bottomArtwork = document.querySelector('.playbackSoundBadge__avatar span.sc-artwork');
-        if (bottomArtwork && bottomArtwork.style.backgroundImage) {
-            const m = bottomArtwork.style.backgroundImage.match(/url\(["']?(.*?)["']?\)/);
-            if (m && m[1] && !m[1].includes('default_avatar')) return m[1];
-        }
-
-        const pageArtwork = document.querySelector('.listenArtworkWrapper span.sc-artwork, .listenArtworkWrapper img');
-        if (pageArtwork) {
-            if (pageArtwork.tagName === 'IMG' && pageArtwork.src) return pageArtwork.src;
-            if (pageArtwork.style.backgroundImage) {
-                const m = pageArtwork.style.backgroundImage.match(/url\(["']?(.*?)["']?\)/);
-                if (m && m[1]) return m[1];
-            }
-        }
-
-        const metaImg = document.querySelector('meta[property="og:image"]');
-        if (metaImg && metaImg.content) return metaImg.content;
-
-        return '';
-    }
-
-    setInterval(() => {
-        let title = '';
-        let artist = '';
-
+    function sendPlaybackState() {
         const titleLink = document.querySelector('.playbackSoundBadge__titleLink');
         const artistLink = document.querySelector('.playbackSoundBadge__lightLink');
+        const playBtn = document.querySelector('.playControl');
 
-        if (titleLink && artistLink) {
-            title = titleLink.getAttribute('title') || titleLink.innerText || '';
-            artist = artistLink.getAttribute('title') || artistLink.innerText || '';
-        } else {
-            const heroTitle = document.querySelector('.soundTitle__title');
-            const heroArtist = document.querySelector('.soundTitle__username');
-            if (heroTitle && heroArtist) {
-                title = heroTitle.innerText || '';
-                artist = heroArtist.innerText || '';
+        if (!titleLink || !artistLink) return;
+
+        const isPlaying = playBtn ? playBtn.classList.contains('playing') : false;
+        const trackTitle = (titleLink.getAttribute('title') || titleLink.textContent || '').trim();
+        const artistName = (artistLink.getAttribute('title') || artistLink.textContent || '').trim();
+
+        const passedEl = document.querySelector('.playbackTimeline__timePassed > span:last-child');
+        const totalEl = document.querySelector('.playbackTimeline__duration > span:last-child');
+
+        const passedSec = passedEl ? parseTimeToSeconds(passedEl.textContent) : 0;
+        const totalSec = totalEl ? parseTimeToSeconds(totalEl.textContent) : 0;
+
+        let coverUrl = '';
+        const badgeImg = document.querySelector('.playbackSoundBadge__avatar .image__lightOutline span');
+        if (badgeImg) {
+            const bg = window.getComputedStyle(badgeImg).backgroundImage;
+            const match = bg.match(/url\(["']?(.*?)["']?\)/);
+            if (match && match[1] && match[1].startsWith('http')) {
+                coverUrl = match[1].replace('-t50x50.', '-t500x500.');
             }
         }
 
-        if (!title || !artist) return;
+        const payload = {
+            track: trackTitle,
+            artist: artistName,
+            passed: passedSec,
+            duration: totalSec,
+            cover: coverUrl,
+            is_playing: isPlaying
+        };
 
-        let passed = extractTime(document.querySelector('.playbackTimeline__timePassed')) 
-                  || extractTime(document.querySelector('.playbackTimeline__timePassed > span:last-child'));
-        
-        let duration = extractTime(document.querySelector('.playbackTimeline__duration')) 
-                    || extractTime(document.querySelector('.playbackTimeline__duration > span:last-child'));
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: 'http://127.0.0.1:23456/update',
+            headers: { 'Content-Type': 'application/json' },
+            data: JSON.stringify(payload),
+            timeout: 1000
+        });
+    }
 
-        if (!passed) passed = "00:00";
-        if (!duration) duration = "00:00";
-
-        let cover = getCoverUrl();
-        if (cover) {
-            cover = cover.replace('-t50x50.', '-t500x500.').replace('-t120x120.', '-t500x500.');
-        }
-
-        document.title = `[${passed}/${duration}] [[[${artist.trim()}:::${title.trim()}]]] <<<${cover.trim()}>>> | SoundCloud`;
-    }, 600);
+    setInterval(sendPlaybackState, 800);
 })();

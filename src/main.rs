@@ -8,7 +8,7 @@ use image::{ImageBuffer, Rgba};
 use imageproc::drawing::{draw_filled_rect_mut, draw_hollow_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ffi::OsString;
 use std::fs;
@@ -17,8 +17,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use sysinfo::System;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tiny_http::{Header, Response, Server};
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem},
     MouseButton, TrayIconBuilder, TrayIconEvent,
@@ -26,19 +26,28 @@ use tray_icon::{
 use urlencoding::encode;
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsHungAppWindow,
-    IsWindowVisible, SetForegroundWindow, ShowWindow, SW_HIDE, SW_RESTORE, SW_SHOW,
+    EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    SetForegroundWindow, ShowWindow, SW_HIDE, SW_RESTORE, SW_SHOW,
 };
 
 const CLIENT_ID: &str = "1249851004971651174";
 const FALLBACK_LARGE_IMAGE: &str = "browser_icon";
 const PLAY_IMAGE_KEY: &str = "play";
-const UPDATE_INTERVAL_MS: u64 = 800;
 const CONFIG_FILE: &str = "config.json";
 
 const SC_IMAGE_BYTES: &[u8] = include_bytes!("sc.png");
 
 static SAVED_HWND: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Clone, Debug, Deserialize, Serialize, Default)]
+struct IncomingTrackPayload {
+    track: String,
+    artist: String,
+    passed: u64,
+    duration: u64,
+    cover: String,
+    is_playing: bool,
+}
 
 fn load_app_icon() -> Option<egui::IconData> {
     let img = image::load_from_memory(SC_IMAGE_BYTES).ok()?.into_rgba8();
@@ -182,16 +191,6 @@ impl I18n {
             AppLanguage::Ua => "Статус: Вимкнено",
         }
     }
-    fn btn_bind(lang: AppLanguage, bound: bool) -> &'static str {
-        match (lang, bound) {
-            (AppLanguage::Ru, true) => "Окно привязано (Сбросить?)",
-            (AppLanguage::Ru, false) => "Привязать окно браузера",
-            (AppLanguage::En, true) => "Window locked (Reset?)",
-            (AppLanguage::En, false) => "Lock browser window",
-            (AppLanguage::Ua, true) => "Вікно прив'язане (Скинути?)",
-            (AppLanguage::Ua, false) => "Прив'язати вікно браузера",
-        }
-    }
     fn btn_minimize(lang: AppLanguage) -> &'static str {
         match lang {
             AppLanguage::Ru => "— Свернуть в фон",
@@ -295,13 +294,6 @@ impl I18n {
             AppLanguage::Ru => "Тема интерфейса:",
             AppLanguage::En => "Theme style:",
             AppLanguage::Ua => "Тема інтерфейсу:",
-        }
-    }
-    fn settings_browser(lang: AppLanguage) -> &'static str {
-        match lang {
-            AppLanguage::Ru => "Браузер:",
-            AppLanguage::En => "Browser:",
-            AppLanguage::Ua => "Браузер:",
         }
     }
     fn settings_clear_hist(lang: AppLanguage) -> &'static str {
@@ -462,55 +454,6 @@ impl AppTheme {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-enum BrowserTarget {
-    Auto,
-    Zen,
-    Chrome,
-    Opera,
-    Yandex,
-    Edge,
-    Firefox,
-}
-
-impl BrowserTarget {
-    fn label(&self, lang: AppLanguage) -> &'static str {
-        match self {
-            BrowserTarget::Auto => match lang {
-                AppLanguage::Ru => "Авто (Все браузеры)",
-                AppLanguage::En => "Auto (All browsers)",
-                AppLanguage::Ua => "Авто (Всі браузери)",
-            },
-            BrowserTarget::Zen => "Zen Browser",
-            BrowserTarget::Chrome => "Google Chrome",
-            BrowserTarget::Opera => "Opera / Opera GX",
-            BrowserTarget::Yandex => "Яндекс Браузер",
-            BrowserTarget::Edge => "Microsoft Edge",
-            BrowserTarget::Firefox => "Mozilla Firefox",
-        }
-    }
-
-    fn matches(&self, proc_name: &str) -> bool {
-        let name = proc_name.to_lowercase();
-        match self {
-            BrowserTarget::Auto => {
-                name.contains("zen")
-                    || name.contains("chrome")
-                    || name.contains("opera")
-                    || name.contains("browser")
-                    || name.contains("msedge")
-                    || name.contains("firefox")
-            }
-            BrowserTarget::Zen => name.contains("zen"),
-            BrowserTarget::Chrome => name.contains("chrome"),
-            BrowserTarget::Opera => name.contains("opera"),
-            BrowserTarget::Yandex => name.contains("browser"),
-            BrowserTarget::Edge => name.contains("msedge"),
-            BrowserTarget::Firefox => name.contains("firefox"),
-        }
-    }
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 struct HistoryEntry {
     track: String,
@@ -521,7 +464,6 @@ struct HistoryEntry {
 
 #[derive(Serialize, Deserialize)]
 struct AppConfig {
-    selected_browser: BrowserTarget,
     theme: AppTheme,
     language: AppLanguage,
     custom_accent: [u8; 3],
@@ -538,7 +480,6 @@ struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            selected_browser: BrowserTarget::Auto,
             theme: AppTheme::Kawaii,
             language: AppLanguage::Ru,
             custom_accent: [230, 95, 140],
@@ -568,225 +509,6 @@ impl AppConfig {
         if let Ok(data) = serde_json::to_string_pretty(self) {
             let _ = fs::write(CONFIG_FILE, data);
         }
-    }
-}
-
-struct WindowSearchContext {
-    pids: HashSet<u32>,
-    windows: Vec<(usize, String)>,
-}
-
-unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let ctx = &mut *(lparam.0 as *mut WindowSearchContext);
-
-    if IsWindowVisible(hwnd).as_bool() && !IsHungAppWindow(hwnd).as_bool() {
-        let mut pid: u32 = 0;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
-
-        if ctx.pids.contains(&pid) {
-            let length = GetWindowTextLengthW(hwnd);
-            if length > 0 {
-                let mut buffer: Vec<u16> = vec![0; (length + 1) as usize];
-                let copied = GetWindowTextW(hwnd, &mut buffer);
-                if copied > 0 {
-                    buffer.truncate(copied as usize);
-                    if let Ok(title) = OsString::from_wide(&buffer).into_string() {
-                        ctx.windows.push((hwnd.0 as usize, title));
-                    }
-                }
-            }
-        }
-    }
-    BOOL(1)
-}
-
-fn get_browser_pids(sys: &mut System, target: BrowserTarget) -> HashSet<u32> {
-    sys.refresh_processes();
-    sys.processes()
-        .iter()
-        .filter_map(|(pid, proc_info)| {
-            if target.matches(proc_info.name()) {
-                Some(pid.as_u32())
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-fn get_browser_windows(pids: &HashSet<u32>) -> Vec<(usize, String)> {
-    if pids.is_empty() {
-        return Vec::new();
-    }
-
-    let mut ctx = WindowSearchContext {
-        pids: pids.clone(),
-        windows: Vec::new(),
-    };
-
-    unsafe {
-        let _ = EnumWindows(
-            Some(enum_windows_callback),
-            LPARAM(&mut ctx as *mut _ as isize),
-        );
-    }
-
-    ctx.windows
-}
-
-fn read_hwnd_title(hwnd_raw: usize) -> Option<String> {
-    let hwnd = HWND(hwnd_raw as *mut c_void);
-    unsafe {
-        if !IsWindowVisible(hwnd).as_bool() || IsHungAppWindow(hwnd).as_bool() {
-            return None;
-        }
-        let length = GetWindowTextLengthW(hwnd);
-        if length > 0 {
-            let mut buffer: Vec<u16> = vec![0; (length + 1) as usize];
-            let copied = GetWindowTextW(hwnd, &mut buffer);
-            if copied > 0 {
-                buffer.truncate(copied as usize);
-                return OsString::from_wide(&buffer).into_string().ok();
-            }
-        }
-    }
-    None
-}
-
-fn parse_time_to_seconds(time_str: &str) -> Option<u64> {
-    let parts: Vec<&str> = time_str.trim().split(':').collect();
-    match parts.len() {
-        2 => {
-            let mins: u64 = parts[0].parse().ok()?;
-            let secs: u64 = parts[1].parse().ok()?;
-            Some(mins * 60 + secs)
-        }
-        3 => {
-            let hours: u64 = parts[0].parse().ok()?;
-            let mins: u64 = parts[1].parse().ok()?;
-            let secs: u64 = parts[2].parse().ok()?;
-            Some(hours * 3600 + mins * 60 + secs)
-        }
-        _ => None,
-    }
-}
-
-fn parse_soundcloud_title(title: &str) -> Option<(String, String, Option<u64>, Option<u64>, Option<String>)> {
-    let mut clean = title.trim().to_string();
-
-    let mut passed_sec = None;
-    let mut total_sec = None;
-    let mut cover_url = None;
-    let mut explicit_artist = None;
-    let mut explicit_track = None;
-
-    if let Some(open_b) = clean.find('[') {
-        if let Some(close_b) = clean[open_b..].find(']') {
-            let close_idx = open_b + close_b;
-            let timing_part = &clean[open_b + 1..close_idx];
-            if let Some((p, d)) = timing_part.split_once('/') {
-                let p_parsed = parse_time_to_seconds(p);
-                let d_parsed = parse_time_to_seconds(d);
-                if p_parsed.is_some() && d_parsed.is_some() {
-                    passed_sec = p_parsed;
-                    total_sec = d_parsed;
-                    clean = format!("{}{}", &clean[..open_b], &clean[close_idx + 1..]);
-                }
-            }
-        }
-    }
-
-    if let Some(start_idx) = clean.find("<<<") {
-        if let Some(end_idx) = clean.find(">>>") {
-            if end_idx > start_idx + 3 {
-                let url = clean[start_idx + 3..end_idx].trim().to_string();
-                if url.starts_with("http") {
-                    cover_url = Some(url);
-                }
-                clean = format!("{}{}", &clean[..start_idx], &clean[end_idx + 3..]);
-            }
-        }
-    }
-
-    if let Some(start_idx) = clean.find("|IMG:") {
-        let rest = &clean[start_idx + 5..];
-        if let Some(end_rel) = rest.find('|') {
-            let url = rest[..end_rel].trim().to_string();
-            if url.starts_with("http") {
-                cover_url = Some(url);
-            }
-            clean = format!("{}{}", &clean[..start_idx], &rest[end_rel + 1..]);
-        }
-    }
-
-    if let Some(start_idx) = clean.find("[[[") {
-        if let Some(end_idx) = clean.find("]]]") {
-            if end_idx > start_idx + 3 {
-                let meta = &clean[start_idx + 3..end_idx];
-                if let Some((a, t)) = meta.split_once(":::") {
-                    let a_str = a.trim();
-                    let t_str = t.trim();
-                    if !a_str.is_empty() && !t_str.is_empty() {
-                        explicit_artist = Some(a_str.to_string());
-                        explicit_track = Some(t_str.to_string());
-                    }
-                }
-                clean = format!("{}{}", &clean[..start_idx], &clean[end_idx + 3..]);
-            }
-        }
-    }
-
-    if let (Some(a), Some(t)) = (explicit_artist, explicit_track) {
-        return Some((t, a, passed_sec, total_sec, cover_url));
-    }
-
-    let junks = [
-        "— Zen Browser", "- Zen Browser", "— Zen", "- Zen",
-        "— Google Chrome", "- Google Chrome",
-        "— Opera", "- Opera", "— Opera GX", "- Opera GX",
-        "— Microsoft Edge", "- Microsoft Edge",
-        "— Brave", "- Brave",
-        "— Mozilla Firefox", "- Mozilla Firefox",
-        "| Stream free on SoundCloud", "| Listen free on SoundCloud",
-        "| SoundCloud", "- SoundCloud",
-    ];
-
-    for junk in &junks {
-        clean = clean.replace(junk, "");
-    }
-
-    clean = clean.trim().to_string();
-
-    if let Some((track, artist)) = clean.rsplit_once(" by ") {
-        let t = track.trim();
-        let a = artist.trim();
-        if !t.is_empty() && !a.is_empty() {
-            return Some((t.to_string(), a.to_string(), passed_sec, total_sec, cover_url));
-        }
-    }
-
-    if let Some((track, playlist)) = clean.rsplit_once(" in ") {
-        let t = track.trim();
-        let p = playlist.trim();
-        if !t.is_empty() && !p.is_empty() {
-            return Some((t.to_string(), p.to_string(), passed_sec, total_sec, cover_url));
-        }
-    }
-
-    None
-}
-
-fn format_str(text: &str) -> String {
-    let mut trimmed = text.trim().trim_matches(&['«', '»', '"', '\''][..]).trim();
-    if let Some(stripped) = trimmed.strip_prefix("Current track:") {
-        trimmed = stripped.trim();
-    }
-    if trimmed.is_empty() {
-        "Неизвестно".to_string()
-    } else if trimmed.chars().count() < 2 {
-        format!("{} ", trimmed)
-    } else {
-        trimmed.to_string()
     }
 }
 
@@ -942,7 +664,7 @@ fn fetch_lyrics_from_api(artist: &str, track: &str) -> LyricsData {
     );
 
     let resp = match ureq::get(&query_url)
-        .set("User-Agent", "zen_rpc/1.0")
+        .set("User-Agent", "zen_rpc/2.0")
         .timeout(Duration::from_secs(4))
         .call()
     {
@@ -1121,7 +843,6 @@ enum ActiveTab {
 #[derive(Clone)]
 struct AppState {
     is_enabled: Arc<AtomicBool>,
-    locked_hwnd: Arc<Mutex<Option<usize>>>,
     status_text: Arc<Mutex<String>>,
     current_track: Arc<Mutex<String>>,
     current_artist: Arc<Mutex<String>>,
@@ -1130,7 +851,6 @@ struct AppState {
     progress_text: Arc<Mutex<String>>,
     current_sec: Arc<Mutex<f32>>,
     track_count: Arc<AtomicU32>,
-    selected_browser: Arc<Mutex<BrowserTarget>>,
     theme: Arc<Mutex<AppTheme>>,
     language: Arc<Mutex<AppLanguage>>,
     custom_accent: Arc<Mutex<[u8; 3]>>,
@@ -1150,12 +870,12 @@ struct AppState {
     lyrics_artist: Arc<Mutex<String>>,
     lyrics_track: Arc<Mutex<String>>,
     is_loading_lyrics: Arc<AtomicBool>,
+    shared_track_payload: Arc<Mutex<Option<(IncomingTrackPayload, Instant)>>>,
 }
 
 impl AppState {
     fn save_current_config(&self) {
         let cfg = AppConfig {
-            selected_browser: *self.selected_browser.lock().unwrap(),
             theme: *self.theme.lock().unwrap(),
             language: *self.language.lock().unwrap(),
             custom_accent: *self.custom_accent.lock().unwrap(),
@@ -1484,34 +1204,6 @@ impl eframe::App for AppState {
                             ui.add_space(6.0);
 
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(I18n::settings_browser(current_lang)).strong());
-                                let mut current_target = *self.selected_browser.lock().unwrap();
-                                let prev_target = current_target;
-
-                                egui::ComboBox::from_id_source("settings_browser_select")
-                                    .selected_text(current_target.label(current_lang))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(&mut current_target, BrowserTarget::Auto, BrowserTarget::Auto.label(current_lang));
-                                        ui.selectable_value(&mut current_target, BrowserTarget::Zen, BrowserTarget::Zen.label(current_lang));
-                                        ui.selectable_value(&mut current_target, BrowserTarget::Chrome, BrowserTarget::Chrome.label(current_lang));
-                                        ui.selectable_value(&mut current_target, BrowserTarget::Opera, BrowserTarget::Opera.label(current_lang));
-                                        ui.selectable_value(&mut current_target, BrowserTarget::Yandex, BrowserTarget::Yandex.label(current_lang));
-                                        ui.selectable_value(&mut current_target, BrowserTarget::Edge, BrowserTarget::Edge.label(current_lang));
-                                        ui.selectable_value(&mut current_target, BrowserTarget::Firefox, BrowserTarget::Firefox.label(current_lang));
-                                    });
-
-                                if current_target != prev_target {
-                                    *self.selected_browser.lock().unwrap() = current_target;
-                                    *self.locked_hwnd.lock().unwrap() = None;
-                                    self.save_current_config();
-                                }
-                            });
-
-                            ui.add_space(6.0);
-                            ui.separator();
-                            ui.add_space(6.0);
-
-                            ui.horizontal(|ui| {
                                 ui.label(I18n::settings_clear_hist(current_lang));
                                 if ui.small_button(I18n::btn_reset(current_lang)).clicked() {
                                     self.history.lock().unwrap().clear();
@@ -1820,41 +1512,6 @@ impl eframe::App for AppState {
 
                         ui.add_space(4.0);
 
-                        let locked = self.locked_hwnd.lock().unwrap().is_some();
-                        let lock_text = I18n::btn_bind(current_lang, locked);
-
-                        let lock_btn = egui::Button::new(
-                            egui::RichText::new(lock_text)
-                                .size(12.0)
-                                .color(if locked {
-                                    current_theme.primary_accent(c_accent)
-                                } else {
-                                    egui::Color32::from_rgb(175, 160, 185)
-                                }),
-                        )
-                        .fill(current_theme.widget_bg(c_bg))
-                        .rounding(8.0);
-
-                        if ui.add(lock_btn).clicked() {
-                            let mut lock_guard = self.locked_hwnd.lock().unwrap();
-                            if lock_guard.is_some() {
-                                *lock_guard = None;
-                            } else {
-                                let target = *self.selected_browser.lock().unwrap();
-                                let mut sys = System::new_all();
-                                let pids = get_browser_pids(&mut sys, target);
-                                let all_windows = get_browser_windows(&pids);
-                                for (hwnd, title) in all_windows {
-                                    if parse_soundcloud_title(&title).is_some() || title.to_lowercase().contains("soundcloud") {
-                                        *lock_guard = Some(hwnd);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        ui.add_space(4.0);
-
                         if ui.add_sized(
                             [220.0, 23.0],
                             egui::Button::new(
@@ -2007,9 +1664,10 @@ fn main() -> Result<(), eframe::Error> {
         }
     }
 
+    let shared_payload = Arc::new(Mutex::new(None));
+
     let state = AppState {
         is_enabled: Arc::new(AtomicBool::new(true)),
-        locked_hwnd: Arc::new(Mutex::new(None)),
         status_text: Arc::new(Mutex::new("Запуск...".to_string())),
         current_track: Arc::new(Mutex::new("Ожидание трека...".to_string())),
         current_artist: Arc::new(Mutex::new("".to_string())),
@@ -2018,7 +1676,6 @@ fn main() -> Result<(), eframe::Error> {
         progress_text: Arc::new(Mutex::new("00:00 / 00:00".to_string())),
         current_sec: Arc::new(Mutex::new(0.0)),
         track_count: Arc::new(AtomicU32::new(cfg.total_tracks_played)),
-        selected_browser: Arc::new(Mutex::new(cfg.selected_browser)),
         theme: Arc::new(Mutex::new(cfg.theme)),
         language: Arc::new(Mutex::new(cfg.language)),
         custom_accent: Arc::new(Mutex::new(cfg.custom_accent)),
@@ -2038,13 +1695,45 @@ fn main() -> Result<(), eframe::Error> {
         lyrics_artist: Arc::new(Mutex::new("".to_string())),
         lyrics_track: Arc::new(Mutex::new("".to_string())),
         is_loading_lyrics: Arc::new(AtomicBool::new(false)),
+        shared_track_payload: shared_payload.clone(),
     };
 
+    // Фоновый HTTP сервер (принимает JSON от Tampermonkey)
+    let http_payload_arc = shared_payload.clone();
+    thread::spawn(move || {
+        if let Ok(server) = Server::http("127.0.0.1:23456") {
+            for mut request in server.incoming_requests() {
+                if request.method().as_str() == "OPTIONS" {
+                    let mut resp = Response::from_string("ok");
+                    resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
+                    resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"POST, OPTIONS"[..]).unwrap());
+                    resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Content-Type"[..]).unwrap());
+                    let _ = request.respond(resp);
+                    continue;
+                }
+
+                if request.url() == "/update" && request.method().as_str() == "POST" {
+                    let mut content = String::new();
+                    if request.as_reader().read_to_string(&mut content).is_ok() {
+                        if let Ok(data) = serde_json::from_str::<IncomingTrackPayload>(&content) {
+                            *http_payload_arc.lock().unwrap() = Some((data, Instant::now()));
+                        }
+                    }
+                    let mut resp = Response::from_string("{\"status\":\"ok\"}");
+                    resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
+                    resp.add_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+                    let _ = request.respond(resp);
+                } else {
+                    let _ = request.respond(Response::from_string("404").with_status_code(404));
+                }
+            }
+        }
+    });
+
+    // Фоновый поток обновления Discord Rich Presence
     let bg_state = state.clone();
     thread::spawn(move || {
-        let mut sys = System::new_all();
         let mut client = DiscordIpcClient::new(CLIENT_ID).ok();
-
         let mut is_connected = false;
         let mut active_track: Option<String> = None;
         let mut active_artist: Option<String> = None;
@@ -2079,103 +1768,75 @@ fn main() -> Result<(), eframe::Error> {
                         track_counted = false;
                     } else {
                         *bg_state.status_text.lock().unwrap() = "Ожидание Discord...".to_string();
-                        thread::sleep(Duration::from_millis(UPDATE_INTERVAL_MS));
+                        thread::sleep(Duration::from_millis(600));
                         continue;
                     }
                 }
             }
 
-            let current_target = *bg_state.selected_browser.lock().unwrap();
-            let browser_pids = get_browser_pids(&mut sys, current_target);
+            let maybe_data = {
+                let guard = bg_state.shared_track_payload.lock().unwrap();
+                guard.clone()
+            };
 
-            if browser_pids.is_empty() {
-                if active_track.is_some() {
-                    active_track = None;
-                    active_artist = None;
-                    last_passed_sec = None;
-                    track_counted = false;
-                    if let Some(ref mut ipc) = client {
-                        let _ = ipc.clear_activity();
+            let valid_payload = match maybe_data {
+                Some((data, updated_at)) if updated_at.elapsed() < Duration::from_secs(3) => {
+                    if data.is_playing && !data.track.is_empty() {
+                        Some(data)
+                    } else {
+                        None
                     }
                 }
-                *bg_state.locked_hwnd.lock().unwrap() = None;
-                *bg_state.status_text.lock().unwrap() = "Браузер не запущен".to_string();
-                *bg_state.current_track.lock().unwrap() = "Браузер закрыт".to_string();
-                *bg_state.current_artist.lock().unwrap() = "".to_string();
-                *bg_state.current_title.lock().unwrap() = "".to_string();
-                *bg_state.progress_ratio.lock().unwrap() = 0.0;
-                *bg_state.progress_text.lock().unwrap() = "00:00 / 00:00".to_string();
-                *bg_state.current_sec.lock().unwrap() = 0.0;
-                thread::sleep(Duration::from_millis(UPDATE_INTERVAL_MS));
-                continue;
-            }
+                _ => None,
+            };
 
-            let current_locked = *bg_state.locked_hwnd.lock().unwrap();
-
-            let mut target_title: Option<String> = current_locked.and_then(read_hwnd_title);
-
-            if target_title.as_deref().and_then(parse_soundcloud_title).is_none() {
-                let all_windows = get_browser_windows(&browser_pids);
-                for (hwnd, title) in all_windows {
-                    if parse_soundcloud_title(&title).is_some() {
-                        *bg_state.locked_hwnd.lock().unwrap() = Some(hwnd);
-                        target_title = Some(title);
-                        break;
-                    }
-                }
-            }
-
-            let parsed = target_title.as_deref().and_then(parse_soundcloud_title);
-
-            match parsed {
-                Some((raw_t, raw_a, passed_opt, total_opt, cover_opt)) => {
-                    let track_str = format_str(&raw_t);
-                    let artist_str = format_str(&raw_a);
+            match valid_payload {
+                Some(payload) => {
+                    let track_str = payload.track.trim().to_string();
+                    let artist_str = payload.artist.trim().to_string();
+                    let p = payload.passed;
+                    let d = payload.duration;
 
                     *bg_state.current_artist.lock().unwrap() = artist_str.clone();
                     *bg_state.current_title.lock().unwrap() = track_str.clone();
                     *bg_state.current_track.lock().unwrap() = format!("{} — {}", track_str, artist_str);
                     *bg_state.status_text.lock().unwrap() = "Воспроизведение".to_string();
 
-                    if let (Some(p), Some(d)) = (passed_opt, total_opt) {
-                        let ratio = if d > 0 { (p as f32 / d as f32).clamp(0.0, 1.0) } else { 0.0 };
-                        *bg_state.progress_ratio.lock().unwrap() = ratio;
-                        *bg_state.progress_text.lock().unwrap() = format!("{} / {}", format_duration(p), format_duration(d));
-                        *bg_state.current_sec.lock().unwrap() = p as f32;
+                    let ratio = if d > 0 { (p as f32 / d as f32).clamp(0.0, 1.0) } else { 0.0 };
+                    *bg_state.progress_ratio.lock().unwrap() = ratio;
+                    *bg_state.progress_text.lock().unwrap() = format!("{} / {}", format_duration(p), format_duration(d));
+                    *bg_state.current_sec.lock().unwrap() = p as f32;
 
-                        if !track_counted && d >= 20 {
-                            if (d > p && (d - p) <= 4) || (p as f32 / d as f32 >= 0.85) {
-                                track_counted = true;
-                                bg_state.track_count.fetch_add(1, Ordering::SeqCst);
+                    if !track_counted && d >= 20 {
+                        if (d > p && (d - p) <= 4) || (p as f32 / d as f32 >= 0.85) {
+                            track_counted = true;
+                            bg_state.track_count.fetch_add(1, Ordering::SeqCst);
 
-                                {
-                                    let mut hist = bg_state.history.lock().unwrap();
-                                    let now_str = Local::now().format("%H:%M").to_string();
-                                    hist.push(HistoryEntry {
-                                        track: track_str.clone(),
-                                        artist: artist_str.clone(),
-                                        played_at: now_str,
-                                        duration_sec: Some(d),
-                                    });
-                                    if hist.len() > 200 {
-                                        hist.remove(0);
-                                    }
+                            {
+                                let mut hist = bg_state.history.lock().unwrap();
+                                let now_str = Local::now().format("%H:%M").to_string();
+                                hist.push(HistoryEntry {
+                                    track: track_str.clone(),
+                                    artist: artist_str.clone(),
+                                    played_at: now_str,
+                                    duration_sec: Some(d),
+                                });
+                                if hist.len() > 200 {
+                                    hist.remove(0);
                                 }
-                                bg_state.save_current_config();
                             }
+                            bg_state.save_current_config();
                         }
                     }
 
                     let track_changed = active_track.as_deref() != Some(&track_str) || active_artist.as_deref() != Some(&artist_str);
-
-                    let seeked = match (passed_opt, last_passed_sec) {
+                    let seeked = match (Some(p), last_passed_sec) {
                         (Some(curr), Some(prev)) => (curr as i64 - prev as i64).abs() > 2,
                         _ => false,
                     };
 
                     if track_changed {
                         track_counted = false;
-
                         *bg_state.lyrics_artist.lock().unwrap() = artist_str.clone();
                         *bg_state.lyrics_track.lock().unwrap() = track_str.clone();
                         let a_clone = artist_str.clone();
@@ -2194,7 +1855,7 @@ fn main() -> Result<(), eframe::Error> {
                     if track_changed || seeked {
                         active_track = Some(track_str.clone());
                         active_artist = Some(artist_str.clone());
-                        last_passed_sec = passed_opt;
+                        last_passed_sec = Some(p);
 
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
@@ -2210,21 +1871,17 @@ fn main() -> Result<(), eframe::Error> {
 
                         let small_txt = format!("Tracks: {}", count_val);
 
-                        let mut timestamps = activity::Timestamps::new();
-                        if let (Some(p), Some(d)) = (passed_opt, total_opt) {
-                            let start_time = now - p as i64;
-                            let end_time = start_time + d as i64;
-                            timestamps = timestamps.start(start_time).end(end_time);
-                        } else {
-                            timestamps = timestamps.start(now);
-                        }
+                        let start_time = now - p as i64;
+                        let end_time = start_time + d as i64;
+                        let timestamps = activity::Timestamps::new().start(start_time).end(end_time);
 
-                        let large_img = match cover_opt.as_deref() {
-                            Some(url) if url.starts_with("http") && url.len() <= 256 => url,
-                            _ => FALLBACK_LARGE_IMAGE,
+                        let large_img = if payload.cover.starts_with("http") && payload.cover.len() <= 256 {
+                            payload.cover.as_str()
+                        } else {
+                            FALLBACK_LARGE_IMAGE
                         };
 
-                        let payload = activity::Activity::new()
+                        let discord_payload = activity::Activity::new()
                             .activity_type(activity::ActivityType::Listening)
                             .details(&track_str)
                             .state(&state_str)
@@ -2238,13 +1895,13 @@ fn main() -> Result<(), eframe::Error> {
                             .timestamps(timestamps);
 
                         if let Some(ref mut ipc) = client {
-                            if ipc.set_activity(payload).is_err() {
+                            if ipc.set_activity(discord_payload).is_err() {
                                 is_connected = false;
                                 client = DiscordIpcClient::new(CLIENT_ID).ok();
                             }
                         }
                     } else {
-                        last_passed_sec = passed_opt;
+                        last_passed_sec = Some(p);
                     }
                 }
                 None => {
@@ -2267,7 +1924,7 @@ fn main() -> Result<(), eframe::Error> {
                 }
             }
 
-            thread::sleep(Duration::from_millis(UPDATE_INTERVAL_MS));
+            thread::sleep(Duration::from_millis(500));
         }
     });
 
