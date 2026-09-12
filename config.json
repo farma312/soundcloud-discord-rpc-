@@ -16,7 +16,7 @@
   "particles_direction_up": false,
   "enable_vinyl": false,
   "enable_equalizer": true,
-  "total_tracks_played": 3,
+  "total_tracks_played": 10,
   "custom_image_path": "C:\\Users\\farma\\zen_rpc\\src\\sf.png",
   "history": [
     {
@@ -36,6 +36,48 @@
       "artist": "akiko!",
       "played_at": "16:20",
       "duration_sec": 106
+    },
+    {
+      "track": "1,5",
+      "artist": "королевский XVII",
+      "played_at": "12:52",
+      "duration_sec": 91
+    },
+    {
+      "track": "1,5",
+      "artist": "королевский XVII",
+      "played_at": "12:52",
+      "duration_sec": 91
+    },
+    {
+      "track": "тебя не существует",
+      "artist": "angelgrind",
+      "played_at": "13:00",
+      "duration_sec": 92
+    },
+    {
+      "track": "handmade design +tewiqqq (glowkenji)",
+      "artist": "internetdoublex aka королевский XVII",
+      "played_at": "13:06",
+      "duration_sec": 111
+    },
+    {
+      "track": "handmade design +tewiqqq (glowkenji)",
+      "artist": "internetdoublex aka королевский XVII",
+      "played_at": "13:06",
+      "duration_sec": 111
+    },
+    {
+      "track": "handmade design +tewiqqq (glowkenji)",
+      "artist": "internetdoublex aka королевский XVII",
+      "played_at": "13:07",
+      "duration_sec": 111
+    },
+    {
+      "track": "handmade design +tewiqqq (glowkenji)",
+      "artist": "internetdoublex aka королевский XVII",
+      "played_at": "13:13",
+      "duration_sec": 111
     }
   ]
 }

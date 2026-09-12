@@ -14,16 +14,20 @@ use std::ffi::OsString;
 use std::fs;
 use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::System;
+use tray_icon::{
+    menu::{Menu, MenuEvent, MenuItem},
+    MouseButton, TrayIconBuilder, TrayIconEvent,
+};
 use urlencoding::encode;
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsHungAppWindow,
-    IsWindowVisible,
+    IsWindowVisible, SetForegroundWindow, ShowWindow, SW_HIDE, SW_RESTORE, SW_SHOW,
 };
 
 const CLIENT_ID: &str = "1249851004971651174";
@@ -34,6 +38,8 @@ const CONFIG_FILE: &str = "config.json";
 
 const SC_IMAGE_BYTES: &[u8] = include_bytes!("sc.png");
 
+static SAVED_HWND: AtomicUsize = AtomicUsize::new(0);
+
 fn load_app_icon() -> Option<egui::IconData> {
     let img = image::load_from_memory(SC_IMAGE_BYTES).ok()?.into_rgba8();
     let (width, height) = img.dimensions();
@@ -42,6 +48,76 @@ fn load_app_icon() -> Option<egui::IconData> {
         width,
         height,
     })
+}
+
+fn load_tray_icon() -> Option<tray_icon::Icon> {
+    let img = image::load_from_memory(SC_IMAGE_BYTES).ok()?.into_rgba8();
+    let (width, height) = img.dimensions();
+    tray_icon::Icon::from_rgba(img.into_raw(), width, height).ok()
+}
+
+fn get_own_window() -> Option<HWND> {
+    let saved = SAVED_HWND.load(Ordering::SeqCst);
+    if saved != 0 {
+        return Some(HWND(saved as *mut c_void));
+    }
+
+    let current_pid = std::process::id();
+    struct SearchContext {
+        pid: u32,
+        found: Option<HWND>,
+    }
+    unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = &mut *(lparam.0 as *mut SearchContext);
+        let mut pid = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == ctx.pid {
+            let length = GetWindowTextLengthW(hwnd);
+            if length > 0 {
+                let mut buffer: Vec<u16> = vec![0; (length + 1) as usize];
+                let copied = GetWindowTextW(hwnd, &mut buffer);
+                if copied > 0 {
+                    buffer.truncate(copied as usize);
+                    if let Ok(title) = OsString::from_wide(&buffer).into_string() {
+                        if title.contains("SoundCloud RPC") {
+                            ctx.found = Some(hwnd);
+                            return BOOL(0);
+                        }
+                    }
+                }
+            }
+        }
+        BOOL(1)
+    }
+    let mut ctx = SearchContext {
+        pid: current_pid,
+        found: None,
+    };
+    unsafe {
+        let _ = EnumWindows(Some(enum_cb), LPARAM(&mut ctx as *mut _ as isize));
+    }
+    if let Some(hwnd) = ctx.found {
+        SAVED_HWND.store(hwnd.0 as usize, Ordering::SeqCst);
+    }
+    ctx.found
+}
+
+fn restore_app_window() {
+    if let Some(hwnd) = get_own_window() {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
+}
+
+fn hide_app_window() {
+    if let Some(hwnd) = get_own_window() {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1279,7 +1355,6 @@ impl eframe::App for AppState {
                         ui.group(|ui| {
                             ui.set_width(330.0);
 
-                            // Язык
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new(I18n::settings_lang(current_lang)).strong());
                                 let mut lang_val = *self.language.lock().unwrap();
@@ -1303,7 +1378,6 @@ impl eframe::App for AppState {
                             ui.separator();
                             ui.add_space(6.0);
 
-                            // Тема
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new(I18n::settings_theme(current_lang)).strong());
                                 let mut theme_val = *self.theme.lock().unwrap();
@@ -1353,7 +1427,6 @@ impl eframe::App for AppState {
                             ui.separator();
                             ui.add_space(6.0);
 
-                            // Фоновые частицы + направление полёта
                             ui.horizontal(|ui| {
                                 ui.label(I18n::toggle_particles(current_lang));
                                 let mut p_val = self.enable_particles.load(Ordering::SeqCst);
@@ -1410,7 +1483,6 @@ impl eframe::App for AppState {
                             ui.separator();
                             ui.add_space(6.0);
 
-                            // Браузер
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new(I18n::settings_browser(current_lang)).strong());
                                 let mut current_target = *self.selected_browser.lock().unwrap();
@@ -1439,7 +1511,6 @@ impl eframe::App for AppState {
                             ui.separator();
                             ui.add_space(6.0);
 
-                            // Сброс
                             ui.horizontal(|ui| {
                                 ui.label(I18n::settings_clear_hist(current_lang));
                                 if ui.small_button(I18n::btn_reset(current_lang)).clicked() {
@@ -1794,7 +1865,7 @@ impl eframe::App for AppState {
                             .fill(current_theme.widget_bg(c_bg))
                             .rounding(6.0),
                         ).clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                            hide_app_window();
                         }
 
                         ui.add_space(6.0);
@@ -1815,22 +1886,35 @@ impl eframe::App for AppState {
                         let artist_raw = self.current_artist.lock().unwrap().clone();
                         let title_raw = self.current_title.lock().unwrap().clone();
 
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(&track)
-                                    .strong()
-                                    .size(13.0)
-                                    .color(egui::Color32::WHITE),
-                            );
+                        ui.scope(|ui| {
+                            let row_width = 300.0;
+                            ui.set_max_width(row_width);
 
-                            if !artist_raw.is_empty() && !title_raw.is_empty() {
-                                if ui.small_button("📋").on_hover_text("Копировать ссылку для друзей").clicked() {
-                                    let q = format!("{} {}", artist_raw, title_raw);
-                                    let share_link = format!("🎧 Слушаю: {} — {} | https://soundcloud.com/search/sounds?q={}", artist_raw, title_raw, encode(&q));
-                                    ctx.output_mut(|o| o.copied_text = share_link);
-                                    *self.copy_notify.lock().unwrap() = Some(ctx.input(|i| i.time));
+                            ui.horizontal(|ui| {
+                                let has_meta = !artist_raw.is_empty() && !title_raw.is_empty();
+                                let btn_width = if has_meta { 26.0 } else { 0.0 };
+                                let text_width = (row_width - btn_width - 8.0).max(60.0);
+
+                                let label = egui::Label::new(
+                                    egui::RichText::new(&track)
+                                        .strong()
+                                        .size(13.0)
+                                        .color(egui::Color32::WHITE),
+                                )
+                                .truncate(true);
+
+                                ui.add_sized([text_width, 20.0], label)
+                                    .on_hover_text(&track);
+
+                                if has_meta {
+                                    if ui.small_button("📋").on_hover_text("Копировать ссылку для друзей").clicked() {
+                                        let q = format!("{} {}", artist_raw, title_raw);
+                                        let share_link = format!("🎧 Слушаю: {} — {} | https://soundcloud.com/search/sounds?q={}", artist_raw, title_raw, encode(&q));
+                                        ctx.output_mut(|o| o.copied_text = share_link);
+                                        *self.copy_notify.lock().unwrap() = Some(ctx.input(|i| i.time));
+                                    }
                                 }
-                            }
+                            });
                         });
 
                         let now_t = ctx.input(|i| i.time);
@@ -1867,13 +1951,54 @@ impl eframe::App for AppState {
         if (is_on && ratio > 0.0) || particles_on {
             ctx.request_repaint();
         } else {
-            ctx.request_repaint_after(Duration::from_millis(250));
+            ctx.request_repaint_after(Duration::from_millis(150));
         }
     }
 }
 
 fn main() -> Result<(), eframe::Error> {
     let cfg = AppConfig::load();
+
+    let tray_menu = Menu::new();
+    let show_item = MenuItem::new("Открыть SoundCloud RPC", true, None);
+    let quit_item = MenuItem::new("Выход", true, None);
+    let _ = tray_menu.append_items(&[&show_item, &quit_item]);
+
+    let _tray_icon = load_tray_icon().and_then(|icon| {
+        TrayIconBuilder::new()
+            .with_menu(Box::new(tray_menu))
+            .with_tooltip("SoundCloud RPC")
+            .with_icon(icon)
+            .build()
+            .ok()
+    });
+
+    let show_id = show_item.id().clone();
+    let quit_id = quit_item.id().clone();
+
+    thread::spawn(move || {
+        loop {
+            while let Ok(event) = TrayIconEvent::receiver().try_recv() {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    ..
+                } = event
+                {
+                    restore_app_window();
+                }
+            }
+
+            while let Ok(event) = MenuEvent::receiver().try_recv() {
+                if event.id == show_id {
+                    restore_app_window();
+                } else if event.id == quit_id {
+                    std::process::exit(0);
+                }
+            }
+
+            thread::sleep(Duration::from_millis(50));
+        }
+    });
 
     let mut custom_bytes = None;
     if let Some(ref path_str) = cfg.custom_image_path {
