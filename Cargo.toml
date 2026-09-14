@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+cpal = "0.15"
+rustfft = "6.1"
 eframe = "0.27"
 egui_extras = { version = "0.27", features = ["image"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -24,3 +26,5 @@ windows = { version = "0.58", features = [
 ] }
 tray-icon = "0.14"
 tiny_http = "0.12"
+wry = "0.38"
+tao = "0.28"
