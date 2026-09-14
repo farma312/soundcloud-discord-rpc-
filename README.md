@@ -16,6 +16,12 @@
 
 ## 🚀 Установка и настройка
 
+### Что обязательно устанавливать
+
+- Для обычного Discord RPC и плеера достаточно запустить `zen_rpc.exe` и установить [`soundcloud.user.js`](./soundcloud.user.js) через Tampermonkey.
+- Visual Studio, CMake, WebView2 Runtime и C++ host не нужны для обычного RPC и плеера.
+- Дополнительные C++/WebView2-компоненты требуются только если нужен отдельный нативный **Beta HUD**.
+
 ### 1. Браузер (Tampermonkey)
 1. Установите расширение **[Tampermonkey](https://www.tampermonkey.net/)** в ваш браузер (Chrome, Zen, Opera, Edge, Firefox и др.).
 2. Создайте новый скрипт и вставьте код из файла [`soundcloud.user.js`](./soundcloud.user.js).
@@ -42,7 +48,7 @@ cargo run --release
 
 Основной HUD запускается через локальный Rust HTTP-сервер, а нативное окно Beta HUD размещено в [`cpp_hud`](./cpp_hud). Интерфейс загружается через Microsoft WebView2: Rust отвечает за синхронизацию и команды, C++ - за Windows-окно.
 
-Требуется:
+Требуется только для нативного Beta HUD:
 
 - Visual Studio 2022 с workload **Desktop development with C++**;
 - CMake 3.21 или новее;
